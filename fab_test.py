@@ -1,5 +1,7 @@
 import time
 
+from cytoolz import dicttoolz
+
 from fabric import (
     Connection,
     SerialGroup,
@@ -24,7 +26,8 @@ pubsub_path = f"{go_path}/src/github.com/libp2p/go-floodsub"
 go_executable_path = "/usr/local/go/bin/go"
 # git related for pubsub
 poc_remote = "mine"
-poc_branch = "poc-testing"
+# poc_branch = "temp-poc-testing"
+poc_branch = "1dc628d96810945f71dcda9d304965907fb961ae"
 pubsub_remote = "mine"
 pubsub_orig_repo = "github.com/libp2p/go-floodsub"
 pubsub_mine_repo = "github.com/mhchia/go-floodsub"
@@ -33,25 +36,77 @@ pubsub_branch = "gossipsub-buffersize-changed"
 
 # set connections
 
-connections = []
-for host in hosts:
-    c = Connection(
-        user=host.user,
-        host=host.ip,
-        port=host.port,
-        connect_kwargs=connect_kwargs,
-    )
-    # TODO: maybe can do sth to pre-connect
-    connections.append(c)
+class CustomConnection(Connection):
+
+    node_index = None
+
+    def __init__(self, *args, **kwargs):
+        if 'node_index' not in kwargs:
+            raise ValueError("init error")
+        # self.node_index = kwargs['node_index']
+        self.node_index = kwargs['node_index']
+        orig_kwargs = dicttoolz.dissoc(kwargs, 'node_index')
+        super().__init__(
+            *args,
+            **orig_kwargs,
+        )
+
+    def run(self, *args, **kwargs):
+        custom_kwargs = kwargs.get('custom_kwargs', None)
+        if (custom_kwargs is not None) and (self.node_index in custom_kwargs):
+            custom_cmd = custom_kwargs[self.node_index]
+            orig_kwargs = dicttoolz.dissoc(kwargs, 'custom_kwargs')
+            return super().run(custom_cmd, **orig_kwargs)
+        else:
+            return super().run(*args, **kwargs)
+
+
+# specify which host a node locates
+# e.g. hosts = [h0, h1, h2]
+#      node_host_index_map = [h0, h1, h0, h2]
+# (number of nodes) == len(node_host_index_map)
+node_host_index_map = tuple(range(len(hosts)))
+node_target = {
+    1:0,
+    2:1,
+}
+node_send_collation = {
+    2: (10, 1),
+}
+
+def get_host_conns():
+    for node_index, host in enumerate(hosts):
+        yield CustomConnection(
+            user=host.user,
+            host=host.ip,
+            port=host.port,
+            node_index=node_index,
+            connect_kwargs=connect_kwargs,
+        )
+
+
+def get_node_conns():
+    for node_index, host_index in enumerate(node_host_index_map):
+        yield CustomConnection(
+            user=hosts[host_index].user,
+            host=hosts[host_index].ip,
+            port=hosts[host_index].port,
+            node_index=node_index,
+            connect_kwargs=connect_kwargs,
+        )
+
 
 def make_or_cmd(cmds):
-    return " || ".join(cmds)
+    return " ( " + " || ".join(cmds) + " ) "
+
 
 def make_and_cmd(cmds):
-    return " && ".join(cmds)
+    return " ( " + " && ".join(cmds) + " ) "
+
 
 def make_batch_cmd(cmds):
     return " ; ".join(cmds)
+
 
 # cmds
 cmd_set_env = make_batch_cmd([
@@ -60,7 +115,7 @@ cmd_set_env = make_batch_cmd([
     "export PATH=$PATH:$GOPATH/bin",
     "export PATH=$PATH:$GOROOT/bin",
 ])
-cmd_pull = make_batch_cmd([
+cmd_pull_template = make_batch_cmd([
     cmd_set_env,
     "cd {0}",
     "git fetch {1}",
@@ -68,13 +123,13 @@ cmd_pull = make_batch_cmd([
     "git pull {1} {2}",
 ])
 
-cmd_pull_poc = cmd_pull.format(poc_path, poc_remote, poc_branch)
-cmd_pull_pubsub = cmd_pull.format(pubsub_path, pubsub_remote, pubsub_branch)
+cmd_pull_poc = cmd_pull_template.format(poc_path, poc_remote, poc_branch)
+cmd_pull_pubsub = cmd_pull_template.format(pubsub_path, pubsub_remote, pubsub_branch)
 cmd_setup_pubsub = make_batch_cmd([
     cmd_set_env,
-    # f"go get -u {pubsub_orig_repo}",
+    f"go get -u {pubsub_orig_repo}",
     f"cd {pubsub_path}",
-    f"git remote rm {pubsub_remote}",
+    # f"git remote rm {pubsub_remote}",
     f"git remote add {pubsub_remote} {pubsub_mine_url}",
 ])
 
@@ -84,15 +139,58 @@ cmd_build_poc = make_batch_cmd([
     "go build",
 ])
 
-# g = ThreadingGroup.from_connections(connections).run("echo $GOPATH")
-g = ThreadingGroup.from_connections(connections).run(
-    # cmd_setup_pubsub,
-    # cmd_pull_pubsub,
-    cmd_build_poc
-    # cmd_pull_poc
-    # f"{go_executable_path} build"
-)
-g = ThreadingGroup.from_connections(connections).run("pwd")
-print(dir(g[connections[0]]))
 
-# def c
+host_conns = tuple(get_host_conns())
+node_conns = tuple(get_node_conns())
+
+
+def update_build_poc(conns):
+    g = ThreadingGroup.from_connections(conns).run(cmd_build_poc)
+    for conn in conns:
+        result = g[conn]
+        if not result.ok:
+            raise ValueError(
+                "building failed in conn {}, stdout=\"{}\", stderr=\"{}\"".format(
+                    conn,
+                    result.stdout,
+                    result.stderr,
+                )
+            )
+
+
+def run_nodes(conns):
+    commands = {}
+    for index, _ in enumerate(conns):
+        program_cmd = f"./minimal -seed {index} "
+        if index in node_target:
+            target_node_index = node_target[index]
+            target_node_host_index = node_host_index_map[target_node_index]
+            program_cmd += "-target-seed {} -target-ip {} ".format(
+                target_node_index,
+                hosts[target_node_host_index].ip,
+            )
+        if index in node_send_collation:
+            program_cmd += "-send {} ".format(
+                ",".join(
+                    map(
+                        str,
+                        node_send_collation[index],
+                    )
+                )
+            )
+        node_cmd = make_and_cmd([
+            f"cd {poc_path}",
+            "sleep 1",
+            program_cmd,
+        ])
+        commands[index] = node_cmd
+    print(conns)
+    print(hosts)
+    print(commands)
+    g = ThreadingGroup.from_connections(node_conns).run(custom_kwargs=commands)
+    print(g)
+
+
+if __name__ == "__main__":
+    update_build_poc(host_conns)
+    run_nodes(node_conns)
