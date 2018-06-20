@@ -122,16 +122,14 @@ class CustomConnection(Connection):
         return super().run(*args, **kwargs)
 
 
+# FIXME: here is the config
 # specify which host a node locates
-# e.g. hosts = [h0, h1, h2]
-#      node_host_index_map = [h0, h1, h0, h2]
-# (number of nodes) == len(node_host_index_map)
-# node_host_index_map = tuple(range(len(hosts)))
-# node_host_index_map = (0, 1, 2, 1, 0, 2, 0, 1, 2)
-node_host_index_map = (0,1,0,1,0,1)
+node_host_index_map = (0,0,0)
+# specify which node a node add peers to
 node_target = {
     i+1: i for i in range(len(node_host_index_map) - 1)
 }
+# specify which nodes are sending collations
 node_send_collation = {
     (len(node_host_index_map) - 1): (100, 1, 1000),
 }
