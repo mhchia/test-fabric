@@ -290,5 +290,5 @@ def run_nodes(conns):
 
 
 if __name__ == "__main__":
-    # update_build_poc(host_conns)
-    run_nodes(node_conns)
+    update_build_poc(host_conns)
+    # run_nodes(node_conns)
