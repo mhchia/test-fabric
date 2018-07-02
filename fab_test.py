@@ -1,3 +1,4 @@
+import argparse
 import time
 
 from cytoolz import dicttoolz
@@ -25,7 +26,7 @@ go_executable_path = "/usr/local/go/bin/go"
 
 libp2p_repo = "go-libp2p"
 pubsub_repo = "go-floodsub"
-poc_repo = "sharding-poc"
+poc_repo = "sharding-p2p-poc"
 
 # repos
 repos = {
@@ -43,16 +44,16 @@ repos = {
             "branch": "master",
         },
         "using": {
-            "owner": "libp2p",
-            "remote": "origin",
-            "branch": "feat/gossipsub",
+            "owner": "mhchia",
+            "remote": "mine",
+            "branch": "gossipsub-big-buffer",
         }
     },
     poc_repo: {
         "orig": {
             "owner": "mhchia",
             "remote": "origin",
-            "branch": "master",
+            "branch": "test-speed",
         },
     },
 }
@@ -124,15 +125,21 @@ class CustomConnection(Connection):
 
 # FIXME: here is the config
 # specify which host a node locates
-node_host_index_map = (0,0,0)
+# node_host_index_map = (0,1,1,0,0,1,1,0,0,1,)
+node_host_index_map = (0,0,)
 # specify which node a node add peers to
 node_target = {
     i+1: i for i in range(len(node_host_index_map) - 1)
 }
 # specify which nodes are sending collations
+node_subscribing_shards = {i:[1] for i in range(len(node_host_index_map))}
+# shard_id, num_collations, collation_size, period
 node_send_collation = {
-    (len(node_host_index_map) - 1): (100, 1, 1000),
+    (len(node_host_index_map) - 1): (1, 10, 1000000, 0),
 }
+
+# requirements
+# gcc, ...
 
 
 def get_host_conns():
@@ -177,7 +184,7 @@ def make_batch_cmd(cmds):
 
 
 # constants
-SCALE = 2
+SCALE = 3
 
 # cmds
 cmd_set_env = make_batch_cmd([
@@ -190,6 +197,8 @@ cmd_pull_template = make_batch_cmd([
     cmd_set_env,
     "cd {0}",
     "git fetch {1}",
+    "git checkout master",
+    "git branch -D {2}",
     "git checkout {2}",
     "git pull {1} {2}",
 ])
@@ -221,7 +230,7 @@ def make_cmd_pull(repo):
 def make_cmd_build(repo):
     return make_batch_cmd([
         cmd_set_env,
-        make_cmd_pull(repo),
+        "cd {0}".format(make_repo_src_path(repo)),
         "go build",
     ])
 
@@ -254,39 +263,129 @@ def update_build_poc(conns):
             )
 
 
-def run_nodes(conns):
+exe_name = "sharding-poc"
+
+
+def run_servers(conns):
     commands = {}
     for node_index, _ in enumerate(conns):
-        program_cmd = f"./sharding-poc -seed {node_index} "
-        if node_index in node_target:
-            target_node_index = node_target[node_index]
-            target_node_host_index = node_host_index_map[target_node_index]
-            program_cmd += "-target-seed {} -target-ip {} ".format(
-                target_node_index,
-                hosts[target_node_host_index].ip,
-            )
-        if node_index in node_send_collation:
-            program_cmd += "-send {} ".format(
-                ",".join(
-                    map(
-                        str,
-                        node_send_collation[node_index],
-                    )
-                )
-            )
+        program_cmd = make_batch_cmd([
+            f"killall -9 {exe_name}",
+            "sleep 1",
+            f"nohup script -c './sharding-poc -seed={node_index} 2>&1 1>poc_{node_index}.out &' /dev/null",
+        ])
+
         node_cmd = make_and_cmd([
             "cd {}".format(make_repo_src_path(poc_repo)),
-            "sleep {}".format(node_index * SCALE),
             program_cmd,
         ])
+        # node_cmd = "nohup sleep 20 > 123.txt < /dev/null &"
+        # node_cmd = "cd {}".format(make_repo_src_path(poc_repo))
+        # node_cmd += f"&& nohup ./{exe_name} -seed={node_index} > poc_node_{node_index}.out < /dev/null & "
+        # node_cmd = "nohup ./sharding-poc -seed=0 /dev/null &"
+        # node_cmd = "(nohup ./sharding-poc -seed 0 &) && ps aux|grep sharding-poc"
+        # node_cmd = "setsid ./sharding-poc -seed 0"
+        # node_cmd = "python3 ./temp.py > haha.txt"
+        # node_cmd = "nohup ./c_sleep > haha.txt &"
         commands[node_index] = node_cmd
-    print(conns)
-    print(hosts)
     print(commands)
     g = ThreadingGroup.from_connections(node_conns).run(custom_kwargs=commands)
     print(g)
 
 
+def addpeer(conns):
+    commands = {}
+    exact_conns = []
+    for node_index, conn in enumerate(conns):
+        program_cmd = f"./{exe_name} -seed={node_index} -client "
+        if node_index not in node_target:
+            continue
+        target_node_index = node_target[node_index]
+        target_node_host_index = node_host_index_map[target_node_index]
+        program_cmd += "addpeer {} {} ".format(
+            hosts[target_node_host_index].ip,
+            target_node_index,
+        )
+        node_cmd = make_and_cmd([
+            "cd {}".format(make_repo_src_path(poc_repo)),
+            program_cmd,
+        ])
+        exact_conns.append(conn)
+        commands[node_index] = node_cmd
+    print(commands)
+    g = ThreadingGroup.from_connections(exact_conns).run(custom_kwargs=commands)
+    print(g)
+
+
+def subshard(conns):
+    commands = {}
+    exact_conns = []
+    for node_index, conn in enumerate(conns):
+        program_cmd = make_batch_cmd([
+            f"./{exe_name} -seed={node_index} -client "
+        ])
+        if node_index not in node_subscribing_shards:
+            continue
+        program_cmd += "subshard {}".format(
+            " ".join(
+                map(str, node_subscribing_shards[node_index])
+            )
+        )
+        node_cmd = make_and_cmd([
+            "cd {}".format(make_repo_src_path(poc_repo)),
+            program_cmd,
+        ])
+        exact_conns.append(conn)
+        commands[node_index] = node_cmd
+    print(commands)
+    g = ThreadingGroup.from_connections(exact_conns).run(custom_kwargs=commands)
+    print(g)
+
+
+def broadcastcollation(conns):
+    commands = {}
+    exact_conns = []
+    for node_index, conn in enumerate(conns):
+        program_cmd = make_batch_cmd([
+            f"./{exe_name} -seed={node_index} -client "
+        ])
+        if node_index not in node_send_collation:
+            continue
+        program_cmd += "broadcastcollation {}".format(
+            " ".join(
+                map(str, node_send_collation[node_index])
+            )
+        )
+        node_cmd = make_and_cmd([
+            "cd {}".format(make_repo_src_path(poc_repo)),
+            program_cmd,
+        ])
+        exact_conns.append(conn)
+        commands[node_index] = node_cmd
+    print(commands)
+    g = ThreadingGroup.from_connections(exact_conns).run(custom_kwargs=commands)
+    print(g)
+
+
+rpcs = {
+    "addpeer": addpeer,
+    "broadcastcollation": broadcastcollation,
+    "subshard": subshard,
+    # "unsubshard": unsubshard,
+    # "getsubshard": getsubshard,
+}
+
+
 if __name__ == "__main__":
-    update_build_poc(host_conns)
-    # run_nodes(node_conns)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", help="client or server")
+    args = parser.parse_args()
+    mode = args.mode
+    if mode == "server":
+        run_servers(node_conns)
+    elif mode == "sync":
+        update_build_poc(host_conns)
+    elif mode in rpcs:
+        rpcs[mode](node_conns)
+    else:
+        raise ValueError("wrong mode")
