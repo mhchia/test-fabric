@@ -1,6 +1,8 @@
 import argparse
 import time
 
+from sys import platform
+
 from cytoolz import dicttoolz
 
 from fabric import (
@@ -20,9 +22,15 @@ connect_kwargs = {
 
 
 # paths
+
 go_path = "$HOME/go"
+
+if platform == "Darwin":
+    go_root = "/usr/local/Cellar/go/1.10.2/libexec"
+else:
+    go_root = "/usr/local/go"
+
 go_github_prefix = f"{go_path}/src/github.com"
-go_executable_path = "/usr/local/go/bin/go"
 
 libp2p_repo = "go-libp2p"
 pubsub_repo = "go-floodsub"
@@ -93,9 +101,9 @@ def make_using_repo_url(repo):
     )
 
 
-assert make_repo_github_path(poc_repo) == "github.com/mhchia/sharding-poc"
-assert make_repo_src_path(poc_repo) == f"{go_path}/src/github.com/mhchia/sharding-poc"
-assert make_repo_url(poc_repo) == "https://github.com/mhchia/sharding-poc"
+assert make_repo_github_path(poc_repo) == "github.com/mhchia/sharding-p2p-poc"
+assert make_repo_src_path(poc_repo) == f"{go_path}/src/github.com/mhchia/sharding-p2p-poc"
+assert make_repo_url(poc_repo) == "https://github.com/mhchia/sharding-p2p-poc"
 
 
 # TODO: hacky way to make use of `ThreadingGroup`
@@ -189,7 +197,7 @@ SCALE = 3
 # cmds
 cmd_set_env = make_batch_cmd([
     f"export GOPATH={go_path}",
-    "export GOROOT=/usr/local/go",
+    f"export GOROOT={go_root}",
     "export PATH=$PATH:$GOPATH/bin",
     "export PATH=$PATH:$GOROOT/bin",
 ])
@@ -263,33 +271,30 @@ def update_build_poc(conns):
             )
 
 
-exe_name = "sharding-poc"
+exe_name = "sharding-p2p-poc"
 
 
 def run_servers(conns):
     commands = {}
     for node_index, _ in enumerate(conns):
+
+        linux_command = f"script -f -c './{exe_name} -seed={node_index}' poc_{node_index}.out"
+        osx_command = f"script -q /dev/null ./{exe_name} -seed={node_index} 2>&1 1>poc_{node_index}.out /dev/null"
+
+
         program_cmd = make_batch_cmd([
             f"killall -9 {exe_name}",
             "sleep 1",
-            f"nohup script -c './sharding-poc -seed={node_index} 2>&1 1>poc_{node_index}.out &' /dev/null",
+            f"screen -d -m bash -c \"if [  \"$(uname)\" == \"Darwin\"  ]; then {osx_command}; else {linux_command}; fi\"",
         ])
 
         node_cmd = make_and_cmd([
             "cd {}".format(make_repo_src_path(poc_repo)),
             program_cmd,
         ])
-        # node_cmd = "nohup sleep 20 > 123.txt < /dev/null &"
-        # node_cmd = "cd {}".format(make_repo_src_path(poc_repo))
-        # node_cmd += f"&& nohup ./{exe_name} -seed={node_index} > poc_node_{node_index}.out < /dev/null & "
-        # node_cmd = "nohup ./sharding-poc -seed=0 /dev/null &"
-        # node_cmd = "(nohup ./sharding-poc -seed 0 &) && ps aux|grep sharding-poc"
-        # node_cmd = "setsid ./sharding-poc -seed 0"
-        # node_cmd = "python3 ./temp.py > haha.txt"
-        # node_cmd = "nohup ./c_sleep > haha.txt &"
         commands[node_index] = node_cmd
-    print(commands)
-    g = ThreadingGroup.from_connections(node_conns).run(custom_kwargs=commands)
+
+    g = ThreadingGroup.from_connections(node_conns).run(custom_kwargs=commands,echo=True)
     print(g)
 
 
