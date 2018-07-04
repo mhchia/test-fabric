@@ -284,8 +284,8 @@ def run_servers(conns):
 
         program_cmd = make_batch_cmd([
             f"killall -9 {exe_name}",
-             "sleep 1",
-             f"screen -d -m bash -c \"if [  \"$(uname)\" == \"Darwin\"  ]; then {osx_command}; else {linux_command}; fi\"",
+            "sleep 1",
+            f"screen -d -m bash -c \"if [  \"$(uname)\" == \"Darwin\"  ]; then {osx_command}; else {linux_command}; fi\"",
         ])
 
         node_cmd = make_and_cmd([
