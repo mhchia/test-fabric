@@ -20,6 +20,18 @@ connect_kwargs = {
     "key_filename": key_filenames,
 }
 
+
+# paths
+
+go_path = "$HOME/go"
+
+if platform == "Darwin":
+    go_root = "/usr/local/Cellar/go/1.10.2/libexec"
+else:
+    go_root = "/usr/local/go"
+
+go_github_prefix = f"{go_path}/src/github.com"
+
 libp2p_repo = "go-libp2p"
 pubsub_repo = "go-floodsub"
 poc_repo = "sharding-p2p-poc"
@@ -68,7 +80,8 @@ def make_repo_github_path(repo):
 
 
 def make_repo_src_path(repo):
-    return "$GOPATH/src/{}".format(
+    return "{}/src/{}".format(
+        go_path,
         make_repo_github_path(repo),
     )
 
@@ -89,7 +102,7 @@ def make_using_repo_url(repo):
 
 
 assert make_repo_github_path(poc_repo) == "github.com/mhchia/sharding-p2p-poc"
-assert make_repo_src_path(poc_repo) == f"$GOPATH/src/github.com/mhchia/sharding-p2p-poc"
+assert make_repo_src_path(poc_repo) == f"{go_path}/src/github.com/mhchia/sharding-p2p-poc"
 assert make_repo_url(poc_repo) == "https://github.com/mhchia/sharding-p2p-poc"
 
 
@@ -183,12 +196,13 @@ SCALE = 3
 
 # cmds
 cmd_set_env = make_batch_cmd([
-    "export GOPATH=`go env GOPATH`",
-    "export GOROOT=`go env GOROOT`",
+    f"export GOPATH={go_path}",
+    f"export GOROOT={go_root}",
     "export PATH=$PATH:$GOPATH/bin",
     "export PATH=$PATH:$GOROOT/bin",
 ])
 cmd_pull_template = make_batch_cmd([
+    cmd_set_env,
     "cd {0}",
     "git fetch {1}",
     "git checkout master",
@@ -201,6 +215,7 @@ cmd_pull_template = make_batch_cmd([
 def make_cmd_setup(repo):
     using_info = get_using_repo_info(repo)
     return make_batch_cmd([
+        cmd_set_env,
         "go get -u {}".format(make_repo_github_path(repo)),
         "cd {}".format(make_repo_src_path(repo)),
         # f"git remote rm {pubsub_remote}",
@@ -222,6 +237,7 @@ def make_cmd_pull(repo):
 
 def make_cmd_build(repo):
     return make_batch_cmd([
+        cmd_set_env,
         "cd {0}".format(make_repo_src_path(repo)),
         "go build",
     ])
@@ -234,7 +250,6 @@ node_conns = tuple(get_node_conns())
 def update_build_poc(conns):
     g = ThreadingGroup.from_connections(conns).run(
         make_batch_cmd([
-            cmd_set_env,
             make_cmd_setup(libp2p_repo),
             make_cmd_pull(libp2p_repo),
             make_cmd_setup(pubsub_repo),
@@ -242,7 +257,7 @@ def update_build_poc(conns):
             make_cmd_setup(poc_repo),
             make_cmd_pull(poc_repo),
             make_cmd_build(poc_repo),
-        ]), echo=True
+        ])
     )
     for conn in conns:
         result = g[conn]
@@ -274,7 +289,6 @@ def run_servers(conns):
         ])
 
         node_cmd = make_and_cmd([
-            cmd_set_env,
             "cd {}".format(make_repo_src_path(poc_repo)),
             program_cmd,
         ])
